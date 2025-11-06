@@ -1,0 +1,82 @@
+name: crawl-stars
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: crawler
+          POSTGRES_PASSWORD: crawlerpass
+          POSTGRES_DB: crawlerdb
+        options: >-
+          --health-cmd "pg_isready -U crawler -d crawlerdb"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: crawler
+      PGPASSWORD: crawlerpass
+      PGDATABASE: crawlerdb
+      PGPORT: 5432
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            pg_isready -h $PGHOST -p $PGPORT -U $PGUSER && break
+            echo "Waiting for postgres..."
+            sleep 2
+          done
+
+      - name: Setup Postgres schema
+        run: |
+          psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
+            -f scripts/db_setup.sql
+
+      - name: Crawl stars (GraphQL)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/crawl_stars_graphql.py \
+            --total 100000 \
+            --page-size 100 \
+            --pg-dsn "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
+            --checkpoint-key "global_search_cursor"
+
+      - name: Dump database tables
+        run: |
+          mkdir -p dump
+          psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
+            -c "\copy (SELECT * FROM repos ORDER BY stargazers_count DESC LIMIT 10000) TO 'dump/repos.csv' CSV HEADER"
+          psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
+            -c "\copy (SELECT * FROM repo_stars_history) TO 'dump/repo_stars_history.csv' CSV HEADER"
+          psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
+            -c "\copy (SELECT COUNT(*) as total_repos FROM repos) TO 'dump/stats.csv' CSV HEADER"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawl-dump
+          path: dump/
