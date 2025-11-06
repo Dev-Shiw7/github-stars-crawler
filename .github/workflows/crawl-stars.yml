@@ -49,23 +49,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           
-      # FIX: Install postgresql-client for pg_isready and psql commands
+      # FIX 1: Install postgresql-client for pg_isready and psql commands
       - name: Install PostgreSQL Client
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
-
+          
+      # FIX 2: Enhanced Wait for Postgres
       - name: Wait for Postgres
         run: |
-          echo "Waiting for PostgreSQL service to be ready..."
+          echo "Waiting for PostgreSQL service to be fully ready for connections..."
+          
+          # Use a variable for the DSN to securely pass all credentials to psql
+          DB_DSN="postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE"
+
+          # Loop checks if psql can execute a simple command, verifying a full connection handshake
           for i in {1..30}; do
-            # Use pg_isready to check connection health. Exits 0 on success.
-            pg_isready -h $PGHOST -p $PGPORT -U $PGUSER && break
+            # The '|| true' prevents the loop from failing the step on its own
+            psql "$DB_DSN" -c 'SELECT 1;' && break
             echo "Attempt $i: Waiting 2 seconds..."
             sleep 2
           done
-          # Fail step if postgres is not ready after attempts
-          pg_isready -h $PGHOST -p $PGPORT -U $PGUSER
+          
+          # Final check: This command will fail the step if the DB is still unreachable
+          psql "$DB_DSN" -c 'SELECT 1;'
 
       - name: Setup Postgres schema
         run: |
