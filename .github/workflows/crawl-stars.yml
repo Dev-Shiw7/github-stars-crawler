@@ -28,8 +28,8 @@ jobs:
           --health-interval 10s --health-timeout 5s --health-retries 5
 
     env:
-      # Environment variables for Python script and psql/pg_isready commands
-      PGHOST: 127.0.0.1
+      # FIX: Use the service name 'postgres' as the host for maximum compatibility
+      PGHOST: postgres 
       PGUSER: crawler
       PGPASSWORD: crawlerpass
       PGDATABASE: crawlerdb
@@ -49,23 +49,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           
-      # FIX 1: Install postgresql-client for pg_isready and psql commands
       - name: Install PostgreSQL Client
         run: |
           sudo apt-get update
           sudo apt-get install -y postgresql-client
           
-      # FIX 2: Enhanced Wait for Postgres
-      - name: Wait for Postgres
+      - name: Wait for Postgres (Robust Check)
         run: |
           echo "Waiting for PostgreSQL service to be fully ready for connections..."
           
-          # Use a variable for the DSN to securely pass all credentials to psql
           DB_DSN="postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE"
 
-          # Loop checks if psql can execute a simple command, verifying a full connection handshake
           for i in {1..30}; do
-            # The '|| true' prevents the loop from failing the step on its own
             psql "$DB_DSN" -c 'SELECT 1;' && break
             echo "Attempt $i: Waiting 2 seconds..."
             sleep 2
@@ -76,13 +71,12 @@ jobs:
 
       - name: Setup Postgres schema
         run: |
-          # Use psql (now installed) to execute the setup script
+          # The DSN now uses the 'postgres' host name
           psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
             -f scripts/db_setup.sql
 
       - name: Crawl stars (GraphQL)
         env:
-          # Required for the script to authenticate with GitHub API
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/crawl_stars_graphql.py \
@@ -94,13 +88,10 @@ jobs:
       - name: Dump database tables
         run: |
           mkdir -p dump
-          # Dump repos table (Top 10000 example)
           psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
             -c "\copy (SELECT * FROM repos ORDER BY stargazers_count DESC LIMIT 10000) TO 'dump/repos.csv' CSV HEADER"
-          # Dump history table
           psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
             -c "\copy (SELECT * FROM repo_stars_history) TO 'dump/repo_stars_history.csv' CSV HEADER"
-          # Dump stats
           psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
             -c "\copy (SELECT COUNT(*) as total_repos FROM repos) TO 'dump/stats.csv' CSV HEADER"
 
