@@ -3,11 +3,17 @@ name: crawl-stars
 on:
   workflow_dispatch:
   schedule:
+    # Runs daily at 03:00 UTC
     - cron: '0 3 * * *'
 
 jobs:
   crawl:
     runs-on: ubuntu-latest
+    
+    # Explicitly grant read permission to the default GITHUB_TOKEN for API calls
+    permissions:
+      contents: read 
+
     services:
       postgres:
         image: postgres:15
@@ -22,6 +28,7 @@ jobs:
           --health-interval 10s --health-timeout 5s --health-retries 5
 
     env:
+      # Environment variables for Python script and psql/pg_isready commands
       PGHOST: 127.0.0.1
       PGUSER: crawler
       PGPASSWORD: crawlerpass
@@ -41,22 +48,34 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          
+      # FIX: Install postgresql-client for pg_isready and psql commands
+      - name: Install PostgreSQL Client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
 
       - name: Wait for Postgres
         run: |
+          echo "Waiting for PostgreSQL service to be ready..."
           for i in {1..30}; do
+            # Use pg_isready to check connection health. Exits 0 on success.
             pg_isready -h $PGHOST -p $PGPORT -U $PGUSER && break
-            echo "Waiting for postgres..."
+            echo "Attempt $i: Waiting 2 seconds..."
             sleep 2
           done
+          # Fail step if postgres is not ready after attempts
+          pg_isready -h $PGHOST -p $PGPORT -U $PGUSER
 
       - name: Setup Postgres schema
         run: |
+          # Use psql (now installed) to execute the setup script
           psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
             -f scripts/db_setup.sql
 
       - name: Crawl stars (GraphQL)
         env:
+          # Required for the script to authenticate with GitHub API
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python scripts/crawl_stars_graphql.py \
@@ -68,10 +87,13 @@ jobs:
       - name: Dump database tables
         run: |
           mkdir -p dump
+          # Dump repos table (Top 10000 example)
           psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
             -c "\copy (SELECT * FROM repos ORDER BY stargazers_count DESC LIMIT 10000) TO 'dump/repos.csv' CSV HEADER"
+          # Dump history table
           psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
             -c "\copy (SELECT * FROM repo_stars_history) TO 'dump/repo_stars_history.csv' CSV HEADER"
+          # Dump stats
           psql "postgresql://$PGUSER:$PGPASSWORD@$PGHOST:$PGPORT/$PGDATABASE" \
             -c "\copy (SELECT COUNT(*) as total_repos FROM repos) TO 'dump/stats.csv' CSV HEADER"
 
